@@ -36,7 +36,7 @@ def _get_easyocr_reader():
         import easyocr
 
         logger.info("Initializing EasyOCR reader (gpu=%s)...", settings.USE_GPU)
-        _easyocr_reader = easyocr.Reader(["en"], gpu=settings.USE_GPU)
+        _easyocr_reader = easyocr.Reader(["en","hi"], gpu=settings.USE_GPU)
         logger.info("EasyOCR reader initialized successfully.")
     except Exception as exc:  # noqa: BLE001
         logger.warning("EasyOCR initialization failed (%s). Will try Tesseract fallback.", exc)
@@ -110,6 +110,7 @@ def run_ocr(image_path: str | Path, preprocessed_img: Optional[np.ndarray] = Non
 def _run_easyocr(reader, image_path: str | Path, preprocessed_img: Optional[np.ndarray]) -> OCRResult:
     source = preprocessed_img if preprocessed_img is not None else str(image_path)
     raw_results = reader.readtext(source)
+    print("OCR DEBUG:", [item[1] for item in raw_results])
 
     lines: List[str] = []
     boxes: List[dict] = []

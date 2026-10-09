@@ -22,13 +22,17 @@ _EPIC_PATTERN = re.compile(r"\b([A-Z]{3}\d{7})\b")
 _MRZ_LINE_PATTERN = re.compile(r"^[A-Z0-9<]{20,}$")
 
 
+
 def _find_after_label(lines: list[str], labels: list[str]) -> Optional[str]:
-    """Find a value on the same line after a 'Label: value' pattern."""
+    """Find a value after a label such as 'Name: Rahul'."""
     for line in lines:
         for label in labels:
-            m = re.search(rf"{label}\s*[:\-]\s*(.+)", line, flags=re.IGNORECASE)
-            if m:
-                return m.group(1).strip()
+            pattern = rf"\b{re.escape(label)}\b\s*[:\-]\s*(.+)"
+            match = re.search(pattern, line, flags=re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                if value:
+                    return value
     return None
 
 
@@ -47,19 +51,157 @@ def _find_date(lines: list[str], labels: list[str] | None = None) -> Optional[st
     return None
 
 
+
+
+
+def _find_aadhaar_dob(lines: list[str]) -> Optional[str]:
+    """Find DOB from a recognizable label, including common OCR mistakes."""
+
+    dob_labels = re.compile(
+        r"\b(?:dob|d\.?o\.?b\.?|date\s+of\s+birth|year\s+of\s+birth)\b"
+        r"|जन्म\s*तिथि|जन्म\s*वर्ष",
+        re.IGNORECASE,
+    )
+
+    for i, line in enumerate(lines):
+        if dob_labels.search(line):
+            match = _DATE_PATTERN.search(line)
+            if match:
+                return match.group(1)
+
+            # OCR may put the date on the following line.
+            if i + 1 < len(lines):
+                match = _DATE_PATTERN.search(lines[i + 1])
+                if match:
+                    return match.group(1)
+
+        # Handle common OCR misreading of DOB as "008".
+        if re.search(r"(?:तिथि|birth|008|dob)", line, re.IGNORECASE):
+            match = _DATE_PATTERN.search(line)
+            if match:
+                return match.group(1)
+
+    return None
+
+
+def _find_aadhaar_gender(lines: list[str]) -> Optional[str]:
+    """Find gender labels and normalize common English/Hindi values."""
+    for i, line in enumerate(lines):
+        normalized = line.strip().lower()
+
+        if re.search(r"\b(female|महिला)\b", normalized):
+            return "Female"
+        if re.search(r"\b(male|पुरुष)\b", normalized):
+            return "Male"
+
+        if re.search(r"\b(gender|sex)\b", normalized):
+            value = re.sub(
+                r".*?\b(?:gender|sex)\b\s*[:\-]?\s*",
+                "",
+                line,
+                flags=re.IGNORECASE,
+            ).strip(" :-")
+
+            if re.search(r"\b(female|महिला)\b", value, re.IGNORECASE):
+                return "Female"
+            if re.search(r"\b(male|पुरुष)\b", value, re.IGNORECASE):
+                return "Male"
+
+            if not value and i + 1 < len(lines):
+                next_line = lines[i + 1].strip().lower()
+                if next_line in {"female", "महिला"}:
+                    return "Female"
+                if next_line in {"male", "पुरुष"}:
+                    return "Male"
+
+    return None
+
+
+
+
 def extract_aadhaar_fields(lines: list[str]) -> dict:
     text = "\n".join(lines)
+
+    # 1. Try a name explicitly written after a label.
+    name = _find_after_label(lines, ["name"])
+
+    # 2. Prefer a complete English name from OCR.
+    if not name:
+        for line in lines:
+            cleaned = line.strip()
+
+            if re.fullmatch(
+                r"[A-Za-z]+(?:\s+[A-Za-z]+){1,3}",
+                cleaned,
+            ):
+                if not re.search(
+                    r"\b(?:government|india|authority|unique|male|female)\b",
+                    cleaned,
+                    re.IGNORECASE,
+                ):
+                    name = cleaned
+                    break
+
+    # 3. Combine Hindi name lines:
+    #    उज्जवल + कुमार पण्डेय
+    if not name:
+        for i, line in enumerate(lines):
+            first = line.strip()
+
+            if not re.fullmatch(r"[\u0900-\u097F]+", first):
+                continue
+
+            if i + 1 >= len(lines):
+                continue
+
+            second = lines[i + 1].strip()
+
+            if re.fullmatch(
+                r"[\u0900-\u097F]+(?:\s+[\u0900-\u097F]+){0,2}",
+                second,
+            ):
+                name = f"{first} {second}"
+                break
+
+    # 4. Fallback for other document layouts.
+    if not name:
+        for line in lines:
+            cleaned = line.strip()
+
+            if re.match(
+                r"^(?:s/o|d/o|w/o|c/o|address|dob|date of birth)\b",
+                cleaned,
+                re.IGNORECASE,
+            ):
+                continue
+
+            if re.search(r"\d", cleaned):
+                continue
+
+            if re.search(
+                r"\b(?:government|india|authority|unique|male|female)\b",
+                cleaned,
+                re.IGNORECASE,
+            ):
+                continue
+
+            if len(cleaned.split()) >= 2 and len(cleaned) >= 5:
+                name = cleaned
+                break
+
     fields = {
-        "name": _find_after_label(lines, ["name"]),
-        "date_of_birth": _find_date(lines, ["dob", "birth"]),
-        "gender": _find_after_label(lines, ["gender", "sex"]),
+        "name": name,
+        "date_of_birth": _find_aadhaar_dob(lines),
+        "gender": _find_aadhaar_gender(lines),
         "address": _find_after_label(lines, ["address"]),
         "document_number": None,
-        "photograph_region_detected": True,  # assumed present on ID-style cards
+        "photograph_region_detected": True,
     }
-    m = _AADHAAR_PATTERN.search(text)
-    if m:
-        fields["document_number"] = m.group(1)
+
+    match = _AADHAAR_PATTERN.search(text)
+    if match:
+        fields["document_number"] = match.group(1)
+
     return fields
 
 

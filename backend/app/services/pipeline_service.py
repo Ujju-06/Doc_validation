@@ -40,6 +40,12 @@ def process_single_document(
 
     ocr_result = ocr_service.run_ocr(file_path, preprocessed_img=preprocessed_img)
 
+    logger.info("OCR ENGINE: %s", ocr_result.engine_used)
+    logger.info("OCR CONFIDENCE: %s", ocr_result.mean_confidence)
+    logger.info("OCR RAW LINES: %s", ocr_result.lines)
+
+
+
     if manual_document_type:
         doc_type = manual_document_type
         classification_confidence = 1.0
